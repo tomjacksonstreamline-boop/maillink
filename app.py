@@ -8,8 +8,6 @@ from email.mime.text import MIMEText
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from google.auth.transport.requests import Request
-from googleapiclient.errors import HttpError
 
 # ========================================
 # Streamlit Page Setup
@@ -49,7 +47,7 @@ def extract_email(value: str):
     return match.group(0) if match else None
 
 # ========================================
-# Gmail Label Helpers
+# Gmail Label Helper
 # ========================================
 def get_or_create_label(service, label_name="Mail Merge Sent"):
     """Returns the label ID for the given label name, creates it if missing."""
@@ -72,19 +70,38 @@ def get_or_create_label(service, label_name="Mail Merge Sent"):
         return None
 
 # ========================================
-# Bold Text Converter
+# Bold + Link Converter
 # ========================================
 def convert_bold(text):
     """
-    Converts **bold** syntax to <b>bold</b> while escaping other HTML.
-    Keeps everything else as plain text.
+    Converts **bold** syntax and [text](url) to working HTML.
+    Preserves spacing, line breaks, and Gmail-style link formatting.
     """
     if not text:
         return ""
-    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    # Bold conversion
     text = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", text)
-    text = text.replace("\n", "<br>")
-    return text
+
+    # Link conversion [text](https://example.com)
+    text = re.sub(
+        r"\[(.*?)\]\((https?://[^\s)]+)\)",
+        r'<a href="\2" style="color:#1a73e8; text-decoration:underline;" target="_blank">\1</a>',
+        text,
+    )
+
+    # Preserve newlines & spaces
+    text = text.replace("\n", "<br>").replace("  ", "&nbsp;&nbsp;")
+
+    # Wrap with full HTML for Gmail rendering
+    html_body = f"""
+    <html>
+        <body style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6;">
+            {text}
+        </body>
+    </html>
+    """
+    return html_body
 
 # ========================================
 # OAuth Flow
@@ -141,39 +158,41 @@ if uploaded_file:
     st.header("✍️ Compose Your Email")
     subject_template = st.text_input("Subject", "Hello {Name}")
     body_template = st.text_area(
-        "Body (use **bold** for emphasis)",
-        "Dear {Name},\n\nThis is a **test mail**.\n\nRegards,\nYour Company",
-        height=200
+        "Body (supports **bold**, [link](https://example.com), and line breaks)",
+        """Dear {Name},
+
+Welcome to our **Mail Merge App** demo.
+
+You can add links like [Visit Google](https://google.com)
+and preserve spacing or formatting exactly.
+
+Thanks,  
+**Your Company**
+""",
+        height=250,
     )
 
     # ========================================
-    # Preview Email Template
+    # Preview Section
     # ========================================
-    st.subheader("👁️ Preview Your Email")
+    st.subheader("👁️ Preview Email")
 
     if not df.empty:
-        # Dropdown to select which row to preview
         recipient_options = df["Email"].astype(str).tolist()
         selected_email = st.selectbox("Select recipient to preview", recipient_options)
         try:
             preview_row = df[df["Email"] == selected_email].iloc[0]
-
-            # Format subject and body
             preview_subject = subject_template.format(**preview_row)
             preview_body = body_template.format(**preview_row)
             preview_html = convert_bold(preview_body)
 
             st.markdown(f"**Subject:** {preview_subject}")
             st.markdown("---")
-            st.markdown("**Email Body Preview:**")
             st.markdown(preview_html, unsafe_allow_html=True)
-
         except KeyError as e:
             st.error(f"⚠️ Missing column in data: {e}")
         except Exception as e:
             st.error(f"Error rendering preview: {e}")
-    else:
-        st.info("📂 Upload your file and compose your message to preview.")
 
     # ========================================
     # Label & Delay Options
@@ -205,7 +224,7 @@ if uploaded_file:
                     body_text = body_template.format(**row)
                     html_body = convert_bold(body_text)
 
-                    # Build HTML email
+                    # Build and send HTML email
                     message = MIMEText(html_body, "html")
                     message["to"] = to_addr
                     message["subject"] = subject
@@ -222,7 +241,7 @@ if uploaded_file:
                     errors.append((to_addr, str(e)))
 
         # ========================================
-        # Final Summary
+        # Summary
         # ========================================
         st.success(f"✅ Successfully sent {sent_count} emails.")
         if skipped:
