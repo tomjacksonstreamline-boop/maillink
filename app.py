@@ -194,11 +194,11 @@ Thanks,
 
     delay = st.slider(
         "Delay between emails (seconds)",
-        min_value=30,
-        max_value=300,
-        value=30,
-        step=5,
-        help="Minimum 30 seconds delay required for safe Gmail sending. Applies to New, Follow-up, and Draft modes."
+        min_value=20,
+        max_value=75,
+        value=20,
+        step=1,
+        help="Minimum 20 seconds delay required for safe Gmail sending. Applies to New, Follow-up, and Draft modes."
     )
 
     # ========================================
