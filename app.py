@@ -20,8 +20,8 @@ from googleapiclient.discovery import build
 # ========================================
 # Streamlit Page Setup
 # ========================================
-st.set_page_config(page_title="Gmail Mail Merge for Phoenixx IT", layout="wide")
-st.title("📧 Gmail Mail Merge Tool for Phoenixx IT")
+st.set_page_config(page_title="Gmail Mail Merge", layout="wide")
+st.title("📧 Gmail Mail Merge Tool (with Follow-up Replies + Draft Save)")
 
 # ========================================
 # Gmail API Setup
@@ -58,15 +58,13 @@ if os.path.exists(DONE_FILE) and not st.session_state.get("done", False):
             done_info = json.load(f)
         file_path = done_info.get("file")
         if file_path and os.path.exists(file_path):
-            st.session_state["file_path"] = file_path  # Store in session_state
             st.success("✅ Previous mail merge completed successfully.")
-            with open(st.session_state["file_path"], "rb") as f:
-                st.download_button(
-                    "⬇️ Download Updated CSV",
-                    data=f,
-                    file_name=os.path.basename(st.session_state["file_path"]),
-                    mime="text/csv",
-                )
+            st.download_button(
+                "⬇️ Download Updated CSV",
+                data=open(file_path, "rb"),
+                file_name=os.path.basename(file_path),
+                mime="text/csv",
+            )
             if st.button("🔁 Reset for New Run"):
                 os.remove(DONE_FILE)
                 st.session_state.clear()
@@ -203,17 +201,15 @@ if not st.session_state["sending"]:
             if col not in df.columns:
                 df[col] = ""
 
-        df.reset_index(drop=True, inplace=True)
-        st.info("📌 Include 'ThreadId' and 'RfcMessageId' columns for follow-ups if needed.")
-
-        # Editable data grid
-        edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
-
-        # ✅ Sync deletions before sending
-        df = edited_df.reset_index(drop=True)
-
+        # Keep full DataFrame but get indices of unsent rows
         pending_indices = df.index[df["Status"] != "Sent"].tolist()
 
+        st.info("📌 Include 'ThreadId' and 'RfcMessageId' columns for follow-ups if needed.")
+        df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+
+        # ---------------------------
+        # Template Editor
+        # ---------------------------
         subject_template = st.text_input("Subject", "Hello {Name}")
         body_template = st.text_area(
             "Body",
@@ -229,7 +225,9 @@ Thanks,
         delay = st.slider("Delay (seconds)", 20, 75, 20)
         send_mode = st.radio("Choose mode", ["🆕 New Email", "↩️ Follow-up (Reply)", "💾 Save as Draft"])
 
-        # Preview
+        # ---------------------------
+        # Gmail Template Preview (Below Editor)
+        # ---------------------------
         if not df.empty:
             preview_row = df.iloc[0]
             try:
@@ -244,6 +242,9 @@ Thanks,
             st.markdown(f"**Subject:** {preview_subject}")
             st.markdown(preview_body, unsafe_allow_html=True)
 
+        # ---------------------------
+        # Send Button
+        # ---------------------------
         if st.button("🚀 Send Emails / Save Drafts"):
             st.session_state.update({
                 "sending": True,
@@ -279,14 +280,14 @@ if st.session_state["sending"]:
 
     total = len(pending_indices)
     sent_count, skipped, errors = 0, [], []
+
     batch_count = 0
-    sent_message_ids = []
+    sent_message_ids = []  # Collect message IDs for batch labeling
 
     for i, idx in enumerate(pending_indices):
         if send_mode != "💾 Save as Draft" and batch_count >= BATCH_SIZE_DEFAULT:
             break
-
-        row = df.iloc[idx]
+        row = df.loc[idx]
 
         pct = int(((i + 1) / total) * 100)
         progress.progress(min(max(pct, 0), 100))
@@ -322,6 +323,7 @@ if st.session_state["sending"]:
                 msg_body = {"raw": raw}
 
             if send_mode == "💾 Save as Draft":
+                # Lightweight draft creation
                 service.users().drafts().create(userId="me", body={"message": msg_body}).execute()
                 df.loc[idx, "Status"] = "Draft"
                 time.sleep(random.uniform(delay * 0.9, delay * 1.1))
@@ -332,7 +334,7 @@ if st.session_state["sending"]:
                 df.loc[idx, "RfcMessageId"] = fetch_message_id_header(service, msg_id) or msg_id
                 df.loc[idx, "Status"] = "Sent"
                 if send_mode == "🆕 New Email" and label_id:
-                    sent_message_ids.append(msg_id)
+                    sent_message_ids.append(msg_id)  # Add to batch list
                 time.sleep(random.uniform(delay * 0.9, delay * 1.1))
 
             sent_count += 1
@@ -342,7 +344,7 @@ if st.session_state["sending"]:
             errors.append((to_addr, str(e)))
             st.error(f"Error for {to_addr}: {e}")
 
-    # Save & backup
+    # Apply batch label & CSV backup only for sending modes
     if send_mode != "💾 Save as Draft":
         if sent_message_ids and label_id:
             try:
@@ -353,15 +355,12 @@ if st.session_state["sending"]:
             except Exception as e:
                 st.warning(f"Batch labeling failed: {e}")
 
+        # Save and backup full DataFrame
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_label = re.sub(r'[^A-Za-z0-9_-]', '_', label_name)
         file_name = f"Updated_{safe_label}_{timestamp}.csv"
         file_path = os.path.join("/tmp", file_name)
         df.to_csv(file_path, index=False)
-
-        # ✅ Store file_path in session_state
-        st.session_state["file_path"] = file_path
-
         try:
             send_email_backup(service, file_path)
         except Exception as e:
@@ -385,18 +384,6 @@ if st.session_state["done"]:
         st.error(f"❌ {len(summary['errors'])} errors occurred.")
     if summary.get("skipped"):
         st.warning(f"⚠️ Skipped: {summary['skipped']}")
-
-    # ✅ Show download button using session_state
-    file_path = st.session_state.get("file_path")
-    if file_path and os.path.exists(file_path):
-        with open(file_path, "rb") as f:
-            st.download_button(
-                "⬇️ Download Updated CSV",
-                data=f,
-                file_name=os.path.basename(file_path),
-                mime="text/csv",
-            )
-
     if st.button("🔁 New Run / Reset"):
         if os.path.exists(DONE_FILE):
             os.remove(DONE_FILE)
