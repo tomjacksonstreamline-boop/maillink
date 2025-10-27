@@ -269,7 +269,12 @@ Thanks,
         if st.button("🚀 Start Mail Merge"):
             df = df.reset_index(drop=True)
             df = df.fillna("")
-            pending_indices = df.index[df["Status"] != "Sent"].tolist()
+
+            # --------- FIX: Exclude both Sent and Draft rows from pending list ---------
+            # Previously pending_indices = df.index[df["Status"] != "Sent"].tolist()
+            # That caused 'Draft' rows to be reprocessed on subsequent runs.
+            pending_indices = df.index[~df["Status"].isin(["Sent", "Draft"])].tolist()
+            # ------------------------------------------------------------------------
 
             st.session_state.update({
                 "sending": True,
@@ -377,18 +382,23 @@ if st.session_state["sending"]:
             except Exception as e:
                 st.warning(f"⚠️ Labeling failed: {e}")
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_label = re.sub(r'[^A-Za-z0-9_-]', '_', label_name)
-        file_name = f"Updated_{safe_label}_{timestamp}.csv"
-        file_path = os.path.join("/tmp", file_name)
-        df.to_csv(file_path, index=False)
-        try:
-            send_email_backup(service, file_path)
-        except Exception as e:
-            st.warning(f"⚠️ Backup email failed: {e}")
+    # Save updated CSV & backup email for all modes (Draft / Sent)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_label = re.sub(r'[^A-Za-z0-9_-]', '_', label_name)
+    file_name = f"Updated_{safe_label}_{timestamp}.csv"
+    file_path = os.path.join("/tmp", file_name)
+    df.to_csv(file_path, index=False)
+    try:
+        send_email_backup(service, file_path)
+    except Exception as e:
+        st.warning(f"⚠️ Backup email failed: {e}")
 
+    # Write DONE_FILE so recovery UI shows (helps prevent accidental re-run)
+    try:
         with open(DONE_FILE, "w") as f:
             json.dump({"done_time": str(datetime.now()), "file": file_path}, f)
+    except Exception:
+        pass
 
     st.session_state["sending"] = False
     st.session_state["done"] = True
@@ -411,3 +421,4 @@ if st.session_state["done"]:
             os.remove(DONE_FILE)
         st.session_state.clear()
         st.experimental_rerun()
+
